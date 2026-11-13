@@ -1,0 +1,24 @@
+# for postmortem_brill_streamlit.py and the API
+streamlit
+fastapi
+uvicorn
+streamlit-chat
+streamlit-aggrid==1.1.8.post1
+stqdm
+pandas
+polars==2.0.0
+duckdb==2.0.0
+requests
+python-dotenv
+endplay
+
+# for streamlitlib
+reportlab
+markdown
+aiohttp
+psutil
+
+# for mlBridge
+numpy
+scikit-learn
+matplotlib
