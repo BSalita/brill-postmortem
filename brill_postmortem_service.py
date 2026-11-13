@@ -39,7 +39,7 @@ _CACHE_FILE_RE = re.compile(r"^df-(?P<key>.+)\.parquet$")
 # Default column set for the per-board summary; intersected with the actual
 # dataframe columns.
 BOARD_SUMMARY_COLUMNS = [
-    "Board", "Table", "Player_Name_S", "Dealer", "Vul", "Contract",
+    "Board", "Table", "Entrant", "Dealer", "Vul", "Contract",
     "Declarer_Direction", "Result", "Tricks", "Score_NS", "Pct_NS", "MP_NS",
     "IMP_NS", "ParScore_NS", "ParContracts", "DD_Score_NS", "EV_Score_NS", "PBN",
 ]
@@ -174,7 +174,7 @@ def load_postmortem(key: Optional[str] = None) -> Tuple[pl.DataFrame, Dict[str, 
 def run_sql(df: pl.DataFrame, sql: str, limit: Optional[int] = None) -> Dict[str, Any]:
     """Run DuckDB SQL against the dataframe registered as 'self'."""
     limit = max(1, min(limit or DEFAULT_SQL_ROW_LIMIT, MAX_SQL_ROW_LIMIT))
-    sql = sql.strip().rstrip(";")
+    sql = fill_sql_macros(sql.strip().rstrip(";"))
     if f"from {CON_REGISTER_NAME}" not in sql.lower():
         sql = f"FROM {CON_REGISTER_NAME} " + sql
     # external access off: only the registered dataframe is queryable.
@@ -239,3 +239,105 @@ def schema_columns(df: pl.DataFrame, pattern: Optional[str] = None, limit: Optio
         "truncated": truncated,
         "columns": {c: dtypes[c] for c in names},
     }
+
+
+# ---- One entrant's view of a tournament ----
+
+# Every entrant sits South at their own table, so the directions the favorites
+# SQL asks for are the same for all of them.
+SQL_MACROS = {
+    '{Pair_Direction}': 'NS',
+    '{Opponent_Pair_Direction}': 'EW',
+    '{Player_Direction}': 'S',
+    '{Partner_Direction}': 'N',
+}
+
+
+def fill_sql_macros(sql: str) -> str:
+    for macro, value in SQL_MACROS.items():
+        sql = sql.replace(macro, value)
+    return sql
+
+
+def entrant_names(df: pl.DataFrame) -> List[str]:
+    """Entrant names in table order."""
+    if 'Entrant' not in df.columns:
+        return []
+    return df.select('Table', 'Entrant').unique().sort('Table', 'Entrant')['Entrant'].to_list()
+
+
+def resolve_entrant(df: pl.DataFrame, name: str) -> str:
+    """The entrant called name: exact, then ignoring case, then a unique part of the name."""
+    names = entrant_names(df)
+    wanted = (name or '').strip()
+    if wanted in names:
+        return wanted
+    folded = wanted.casefold()
+    exact = [n for n in names if n.casefold() == folded]
+    partial = [n for n in names if folded and folded in n.casefold()]
+    for matches in (exact, partial):
+        if len(matches) == 1:
+            return matches[0]
+    raise ValueError(f"No single entrant matches {name!r}. Entrants: {', '.join(names)}")
+
+
+def standings(df: pl.DataFrame) -> List[Dict[str, Any]]:
+    """One row per entrant, best matchpoint percentage first.
+
+    pct is the mean of the entrant's board percentages against the other
+    tables, for IMP events as well; score is the total of their NS scores.
+    """
+    if 'Entrant' not in df.columns:
+        return []
+    aggregates = [pl.len().alias('boards')]
+    if 'Pct_NS' in df.columns:
+        aggregates.append((pl.col('Pct_NS').cast(pl.Float64).mean() * 100).round(2).alias('pct'))
+    if 'Score_NS' in df.columns:
+        aggregates.append(pl.col('Score_NS').sum().alias('score'))
+    table = df.group_by('Entrant', 'Table').agg(aggregates)
+    if 'pct' in table.columns:
+        table = table.with_columns(
+            pl.col('pct').rank(method='min', descending=True).cast(pl.UInt32).alias('rank')
+        ).sort(['rank', 'Table'])
+    else:
+        table = table.sort('Table')
+    return table.rename({'Entrant': 'entrant', 'Table': 'table'}).to_dicts()
+
+
+def personalize(df: pl.DataFrame, entrant: Optional[str]) -> Tuple[pl.DataFrame, Dict[str, Any]]:
+    """Flag df for one entrant (or the whole field). Returns (df, who)."""
+    import brill_board_flags
+
+    if not (entrant or '').strip():
+        return brill_board_flags.apply_board_flags(df, None), {'entrant': None}
+    name = resolve_entrant(df, entrant)
+    row = df.filter(pl.col('Entrant').eq(name)).row(0, named=True)
+    who = {
+        'entrant': name,
+        'table': row.get('Table'),
+        'player_direction': 'S',
+        'partner_direction': 'N',
+        'partner_name': row.get('Player_Name_N'),
+        'pair_direction': 'NS',
+    }
+    return brill_board_flags.apply_board_flags(df, name), who
+
+
+def _normalized(text: Any) -> str:
+    return ' '.join(re.findall(r'[a-z0-9]+', str(text or '').lower()))
+
+
+def match_tournament(tournaments: List[Dict[str, Any]], text: str) -> Optional[Dict[str, Any]]:
+    """The listed tournament with this id or name; a part of the name if only one has it."""
+    wanted = (text or '').strip()
+    for row in tournaments:
+        if row.get('id') == wanted:
+            return row
+    needle = _normalized(wanted)
+    if not needle:
+        return None
+    exact = [row for row in tournaments if _normalized(row.get('name')) == needle]
+    if exact:
+        return exact[0]  # newest first
+    partial = [row for row in tournaments if needle in _normalized(row.get('name'))]
+    return partial[0] if len(partial) == 1 else None

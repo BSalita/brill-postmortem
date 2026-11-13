@@ -126,5 +126,155 @@ class StreamlitApiBoundaryTests(unittest.TestCase):
         self.assertIn('brill_postmortem_api_client', modules)
 
 
+def scored_df() -> pl.DataFrame:
+    """sample_df with the two augmented columns the standings read."""
+    df = sample_df().sort('Board', 'Table')
+    return df.with_columns(
+        pl.Series('Pct_NS', [1.0, 0.5, 0.0, 0.0, 1.0], dtype=pl.Float32),
+        pl.Series('Score_NS', [400, 150, 0, -500, -100], dtype=pl.Int16),
+    )
+
+
+class EntrantViewTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.df = scored_df()
+
+    def test_resolve_entrant(self):
+        self.assertEqual(service.resolve_entrant(self.df, 'BEN'), 'BEN')
+        self.assertEqual(service.resolve_entrant(self.df, ' alice '), 'Alice')
+        self.assertEqual(service.resolve_entrant(self.df, 'be'), 'BEN')
+
+    def test_ambiguous_or_unknown_entrant_lists_the_field(self):
+        for name in ('i', 'Nobody'):  # 'i' is in both Alice and Lia
+            with self.assertRaisesRegex(ValueError, 'Entrants: Alice, BEN, Lia'):
+                service.resolve_entrant(self.df, name)
+
+    def test_standings_rank_by_mean_percentage(self):
+        rows = service.standings(self.df)
+        self.assertEqual(
+            [(r['rank'], r['entrant'], r['pct'], r['boards'], r['score']) for r in rows],
+            [(1, 'BEN', 75.0, 2, 50), (2, 'Alice', 50.0, 2, -100), (3, 'Lia', 0.0, 1, 0)])
+
+    def test_personalize_for_an_entrant(self):
+        df, who = service.personalize(self.df, 'ben')
+        self.assertEqual(who, {
+            'entrant': 'BEN', 'table': 2, 'player_direction': 'S', 'partner_direction': 'N',
+            'partner_name': 'Robot (Brill)', 'pair_direction': 'NS'})
+        self.assertEqual(df.filter('Boards_I_Played')['Entrant'].unique().to_list(), ['BEN'])
+
+    def test_personalize_for_the_whole_field(self):
+        df, who = service.personalize(self.df, None)
+        self.assertEqual(who, {'entrant': None})
+        self.assertTrue(df['Boards_I_Played'].all())
+
+    def test_sql_macros_are_filled(self):
+        result = service.run_sql(
+            self.df,
+            "SELECT COUNT(*) AS n, '{Pair_Direction}{Opponent_Pair_Direction}' AS d "
+            "FROM self WHERE Vul_{Pair_Direction}")
+        self.assertEqual(result['rows'], [{'n': 2, 'd': 'NSEW'}])
+
+    def test_match_tournament(self):
+        listed = [
+            {'id': 't3', 'name': 'Daily MP — 2026-11-12'},
+            {'id': 't2', 'name': 'Daily IMP - strongest hand — 2026-11-12'},
+            {'id': 't1', 'name': 'Daily IMP — 2026-11-12'},
+        ]
+        self.assertEqual(service.match_tournament(listed, 't2')['id'], 't2')
+        self.assertEqual(service.match_tournament(listed, 'daily imp 2026-11-12')['id'], 't1')
+        self.assertEqual(service.match_tournament(listed, 'strongest hand')['id'], 't2')
+        self.assertIsNone(service.match_tournament(listed, 'Daily'))  # three match
+        self.assertIsNone(service.match_tournament(listed, 'Monthly teams'))
+
+
+class ApiTests(unittest.TestCase):
+    """The REST API over a cached tournament. No Brill site, no augmentation."""
+
+    LISTED = [
+        {'id': 'aaaaaaaa-0000-0000-0000-000000000002', 'name': 'Daily MP — 2026-11-12', 'closed': True},
+        {'id': 'aaaaaaaa-0000-0000-0000-000000000001', 'name': 'Daily IMP — 2026-11-12', 'closed': True},
+    ]
+
+    def setUp(self):
+        import brill_postmortem_api_server as server
+
+        self.server = server
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.generated = []
+
+        def generate(tournament_id, sd_samples=10, force=False):
+            self.generated.append(tournament_id)
+            self._cache(tournament_id, 'generated')
+            return {'key': service.find_cached(tournament_id)['key']}
+
+        for patch in (
+            mock.patch.object(service, 'CACHE_DIR', pathlib.Path(tmp.name)),
+            mock.patch.object(server, '_list_tournaments', lambda limit, include_open: self.LISTED[:limit]),
+            mock.patch.object(server, '_generate_isolated', generate),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self._cache(self.LISTED[0]['id'], 'daily-mp-2026-11-12')
+
+    def _cache(self, tournament_id, stem):
+        service.save_augmented_df_to_cache(
+            brill_board_flags.apply_board_flags(scored_df()),
+            service.tournament_cache_key(tournament_id, f'{stem}.pbn'),
+            {'tournament_id': tournament_id, 'tournament_name': stem, 'closed': True},
+        )
+
+    # The endpoint functions are called directly: Query(...) defaults are not
+    # resolved outside a request, so every argument is passed.
+    def _boards(self, entrant=None, only_my_boards=True, columns=None, tournament=None):
+        return self.server.boards(
+            tournament=tournament, key=None, entrant=entrant, only_my_boards=only_my_boards,
+            columns=columns, limit=500)
+
+    def _sql(self, sql, entrant=None):
+        return self.server.sql(self.server.SqlRequest(sql=sql, entrant=entrant))
+
+    def _refused(self, call):
+        with self.assertRaises(self.server.HTTPException) as caught:
+            call()
+        self.assertEqual(caught.exception.status_code, 422)
+        return caught.exception.detail
+
+    def test_entrants_default_to_the_latest_tournament(self):
+        body = self.server.entrants(tournament=None)
+        self.assertEqual(body['meta']['tournament_id'], self.LISTED[0]['id'])
+        self.assertEqual([e['entrant'] for e in body['entrants']], ['BEN', 'Alice', 'Lia'])
+        self.assertEqual(self.generated, [])
+
+    def test_boards_for_one_entrant(self):
+        body = self._boards(entrant='alice', columns='Board,Entrant,Contract')
+        self.assertEqual(body['meta']['entrant'], 'Alice')
+        self.assertEqual(body['rows'], [
+            {'Board': 1, 'Entrant': 'Alice', 'Contract': '3NN'},
+            {'Board': 2, 'Entrant': 'Alice', 'Contract': '4SXS'},
+        ])
+        self.assertEqual(self._boards(entrant='alice', only_my_boards=False)['row_count'], 5)
+        self.assertEqual(self._boards()['row_count'], 5)
+
+    def test_sql_flags_follow_the_entrant(self):
+        sql = "SELECT COUNT(*) AS n FROM self WHERE Boards_I_Declared"
+        self.assertEqual(self._sql(sql, entrant='Alice')['rows'], [{'n': 1}])
+        self.assertEqual(self._sql(sql)['rows'], [{'n': 5}])
+
+    def test_named_tournament_not_cached_is_generated_once(self):
+        for _ in range(2):
+            body = self.server.entrants(tournament='Daily IMP 2026-11-12')
+            self.assertEqual(body['meta']['tournament_id'], self.LISTED[1]['id'])
+        self.assertEqual(self.generated, [self.LISTED[1]['id']])
+
+    def test_unknown_names_are_refused_with_a_hint(self):
+        self.assertIn('Daily MP', self._refused(lambda: self.server.entrants(tournament='Monthly teams')))
+        self.assertIn('Entrants: Alice, BEN, Lia', self._refused(lambda: self._boards(entrant='Zed')))
+
+    def test_bad_sql_is_a_422(self):
+        self.assertIn('SQL error', self._refused(lambda: self._sql('SELECT nope FROM self')))
+
+
 if __name__ == '__main__':
     unittest.main()

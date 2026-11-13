@@ -56,13 +56,17 @@ URL parameters: `?tournament=<id>&entrant=<name>&show_sql_query=1&sd_samples=10`
 | GET | `/brill/tournaments` | Latest closed field events (`limit`, `include_open`) |
 | POST | `/brill/generate` | Fetch one tournament (`tournament_id`), augment, cache |
 | GET | `/brill/games` | Cached tournaments, newest first |
-| GET | `/brill/boards` | Per-table, per-board rows (`key`, `columns`, `limit`) |
-| POST | `/brill/sql` | DuckDB SQL against table `self` |
-| GET | `/brill/schema` | Column names and dtypes |
+| GET | `/brill/dataset-info` | Cache directory and keys |
+| GET | `/brill/entrants` | Entrants and standings of one tournament (`tournament`) |
+| GET | `/brill/boards` | Per-table, per-board rows (`tournament`, `entrant`, `only_my_boards`, `columns`, `limit`) |
+| POST | `/brill/sql` | DuckDB SQL against table `self` (`tournament`, `entrant`) |
+| GET | `/brill/schema` | Column names and dtypes (`tournament`, `pattern`) |
 | GET | `/brill/parquet` | Full augmented dataframe |
 | GET | `/brill/pbn` | The field PBN the cache entry was built from |
 
-`key` is a cache key or a tournament id.
+`tournament` is a tournament id, a cache key, or a name such as `Daily IMP 2026-11-12`; omitted, it is the latest closed tournament. A tournament not cached yet is fetched and built on first use. `entrant` flags the `Boards_*` columns for that entrant (case and a unique part of the name are accepted); omitted, the whole field counts. `{Pair_Direction}` and its sibling macros are filled in (the entrant is always South).
+
+MCP tools live in MortyBridgeMCP (`BRILL_POSTMORTEM_API_BASE_URL`, default `http://127.0.0.1:8531`): `brill_tournaments`, `brill_postmortem_entrants`, `brill_postmortem_boards`, `brill_postmortem_sql`, `brill_postmortem_schema`, `brill_postmortem_favorites`, and `brill_postmortem_report_start` / `_status` / `_result` / `_pdf`. Dataset coverage is `bridge_status(component="brill_postmortem")`.
 
 ## Notes
 

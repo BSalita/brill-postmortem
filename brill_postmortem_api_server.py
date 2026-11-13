@@ -11,6 +11,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import duckdb
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
@@ -33,7 +35,9 @@ app = FastAPI(title="postmortem-brill API", version="1.0.0")
 
 class SqlRequest(BaseModel):
     sql: str
-    key: Optional[str] = None
+    tournament: Optional[str] = None
+    key: Optional[str] = None  # same as tournament
+    entrant: Optional[str] = None
     limit: int = 500
 
 
@@ -51,7 +55,10 @@ def _run(callable_, /, *args, **kwargs):
     except brill_client.BrillError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except (FileNotFoundError, KeyError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        detail = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
+        raise HTTPException(status_code=422, detail=str(detail)) from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=422, detail=f"SQL error: {exc}") from exc
 
 
 _GENERATE_TIMEOUT_S = 900
@@ -116,6 +123,50 @@ def _list_tournaments(limit: int, include_open: bool) -> List[Dict[str, Any]]:
     return rows
 
 
+# How far back a tournament can be named. Four events close each morning.
+_RESOLVE_LIMIT = 60
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def _tournament_frame(tournament: Optional[str] = None):
+    """(df, meta) for a cache key, tournament id, or name; the latest closed
+    tournament when omitted. A tournament not cached yet is fetched and built."""
+    text = (tournament or "").strip()
+    cached = service.find_cached(text) if text else None
+    if cached is not None and cached.get("closed"):
+        return service.load_postmortem(cached["key"])
+    listing = _list_tournaments(_RESOLVE_LIMIT, False)
+    if not text or text.lower() == "latest":
+        if not listing:
+            raise ValueError("No closed Brill tournament was found.")
+        row = listing[0]
+    else:
+        row = service.match_tournament(listing, text)
+        if row is None and _UUID_RE.match(text):
+            row = {"id": text}
+        if row is None:
+            names = ", ".join(str(t.get("name")) for t in listing[:8])
+            raise ValueError(
+                f"No Brill tournament matches {tournament!r}. Pass an id or name from "
+                f"/brill/tournaments. Latest: {names}"
+            )
+    cached = service.find_cached(row["id"])
+    if cached is not None and cached.get("closed"):
+        return service.load_postmortem(cached["key"])
+    try:
+        meta = _generate_isolated(row["id"])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return service.load_postmortem(meta["key"])
+
+
+def _entrant_frame(tournament: Optional[str], entrant: Optional[str]):
+    """(df, meta) flagged for one entrant, or for the whole field."""
+    frame, meta = _tournament_frame(tournament)
+    frame, who = service.personalize(frame, entrant)
+    return frame, {**meta, **who}
+
+
 @app.get("/health")
 def health() -> dict:
     info = _run(service.dataset_info)
@@ -125,6 +176,15 @@ def health() -> dict:
         "site": brill_client.SITE_URL,
         "credentials_configured": brill_client.credentials_configured(),
         **info,
+    }
+
+
+@app.get("/brill/dataset-info")
+def dataset_info() -> dict:
+    return {
+        **_run(service.dataset_info),
+        "site": brill_client.SITE_URL,
+        "credentials_configured": brill_client.credentials_configured(),
     }
 
 
@@ -160,20 +220,37 @@ def generate(request: GenerateRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/brill/entrants")
+def entrants(tournament: Optional[str] = Query(None)) -> dict:
+    """Entrants of one tournament with their standings, best first."""
+    frame, meta = _run(_tournament_frame, tournament)
+    rows = _run(service.standings, frame)
+    return {"meta": meta, "entrants": rows, "count": len(rows)}
+
+
 @app.get("/brill/boards")
 def boards(
+    tournament: Optional[str] = Query(None),
     key: Optional[str] = Query(None),
+    entrant: Optional[str] = Query(None),
+    only_my_boards: bool = Query(True),
     columns: Optional[str] = Query(None),
     limit: int = Query(500, ge=1, le=5000),
 ) -> dict:
-    frame, meta = _run(service.load_postmortem, key)
+    """Per-table, per-board rows. With an entrant, that entrant's boards only
+    unless only_my_boards is false."""
+    frame, meta = _run(_entrant_frame, tournament or key, entrant)
+    if meta.get("entrant") and only_my_boards:
+        frame = frame.filter("Boards_I_Played")
     selected = [column.strip() for column in columns.split(",")] if columns else None
     return _run(service.board_results, frame, meta, columns=selected, limit=limit)
 
 
 @app.post("/brill/sql")
 def sql(request: SqlRequest) -> dict:
-    frame, meta = _run(service.load_postmortem, request.key)
+    """DuckDB SQL on table self. With an entrant the Boards_* flags are theirs;
+    the {Pair_Direction} family of macros is filled in either way."""
+    frame, meta = _run(_entrant_frame, request.tournament or request.key, request.entrant)
     result = _run(service.run_sql, frame, request.sql, limit=request.limit)
     result["meta"] = meta
     return result
@@ -181,11 +258,12 @@ def sql(request: SqlRequest) -> dict:
 
 @app.get("/brill/schema")
 def schema(
+    tournament: Optional[str] = Query(None),
     key: Optional[str] = Query(None),
     pattern: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=5000),
 ) -> dict:
-    frame, _meta = _run(service.load_postmortem, key)
+    frame, _meta = _run(_tournament_frame, tournament or key)
     return _run(service.schema_columns, frame, pattern=pattern, limit=limit)
 
 
