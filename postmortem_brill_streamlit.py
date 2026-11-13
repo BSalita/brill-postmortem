@@ -56,7 +56,7 @@ for _p in _resolved_libs:
 from typing import Any, Dict, List, Optional
 
 import streamlitlib
-from mlBridge.mlBridgePostmortemLib import PostmortemBase, sidebar_report_buttons
+from mlBridge.mlBridgePostmortemLib import HAND_EXPECTATIONS_TABLE, PostmortemBase, sidebar_report_buttons
 from mlBridge.mlBridgeLib import cast_numeric_display_columns
 import brill_postmortem_api_client as brill_api
 from brill_board_flags import ALL_ENTRANTS, apply_board_flags
@@ -264,7 +264,7 @@ def entrants_of(df: Optional[pl.DataFrame]) -> List[str]:
     )
 
 
-def apply_entrant():
+def apply_entrant(keep_hand_expectations: bool = False):
     """Flag the loaded field for the chosen entrant and register it as 'self'."""
     df = st.session_state.get('brill_base_df')
     if df is None:
@@ -294,14 +294,36 @@ def apply_entrant():
         st.session_state.pair_id = row.get('Table')
 
     st.session_state.df = apply_board_flags(df, entrant)
-    con = get_session_duckdb_connection()
-    con.register(st.session_state.con_register_name, st.session_state.df)
+    register_session_df(st.session_state.df, keep_hand_expectations=keep_hand_expectations)
     sync_url_params_from_state()
+
+
+def register_session_df(df: pl.DataFrame, keep_hand_expectations: bool = False) -> None:
+    """Register df as 'self' on a new DuckDB connection for this session.
+
+    Streamlit starts the rerun for a sidebar change at once, while the run it
+    replaces may still be inside a query, and DuckDB refuses a second call on
+    a busy connection (ResourceInUseException). So a changed dataframe gets a
+    connection of its own instead of being re-registered on the one the old
+    run is using. The old connection is released when that run ends.
+
+    The connection is published to the session only once its tables are in
+    place. keep_hand_expectations carries the Hand Expectations table over:
+    it depends on the deals, not on the entrant.
+    """
+    con = duckdb.connect()
+    con.register(st.session_state.get('con_register_name') or 'self', df)
+    hand_expectations = st.session_state.get('hand_expectations_df')
+    if keep_hand_expectations and hand_expectations is not None:
+        con.register(HAND_EXPECTATIONS_TABLE, hand_expectations)
+    # PostmortemBase reads db_connection; this module reads con.
+    st.session_state.con = con
+    st.session_state.db_connection = con
 
 
 def entrant_changed():
     st.session_state.sql_query_mode = False
-    apply_entrant()
+    apply_entrant(keep_hand_expectations=True)
 
 
 ASSISTANT_LOGO_URL = 'https://github.com/BSalita/acbl-postmortem/blob/master/assets/logo_assistant.gif?raw=true' # 🥸 todo: put into config. must have raw=true for github url.
