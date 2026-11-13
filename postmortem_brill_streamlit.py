@@ -56,7 +56,12 @@ for _p in _resolved_libs:
 from typing import Any, Dict, List, Optional
 
 import streamlitlib
-from mlBridge.mlBridgePostmortemLib import HAND_EXPECTATIONS_TABLE, PostmortemBase, sidebar_report_buttons
+from mlBridge.mlBridgePostmortemLib import (
+    HAND_EXPECTATIONS_TABLE,
+    PostmortemBase,
+    sidebar_report_buttons,
+    when_connection_free,
+)
 from mlBridge.mlBridgeLib import cast_numeric_display_columns
 import brill_postmortem_api_client as brill_api
 from brill_board_flags import ALL_ENTRANTS, apply_board_flags
@@ -88,7 +93,7 @@ def ShowDataFrameTable(df, key, query='SELECT * FROM self', show_sql_query=True)
 
     try:
         con = get_session_duckdb_connection()
-        result_df = cast_numeric_display_columns(con.sql(query).pl())
+        result_df = cast_numeric_display_columns(when_connection_free(lambda: con.sql(query).pl()))
         st.text(f"Result is a dataframe of {len(result_df)} rows.")
         streamlitlib.ShowDataFrameTable(result_df, key)
     except Exception as e:
