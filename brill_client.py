@@ -123,6 +123,7 @@ def _sign_in() -> str:
     body = resp.json()
     _session['access_token'] = body['access_token']
     _session['expires_at'] = time.time() + int(body.get('expires_in') or 3600)
+    _session['user_id'] = (body.get('user') or {}).get('id')
     return body['access_token']
 
 
@@ -217,6 +218,27 @@ def field_round(tournament_id: str) -> Optional[Dict[str, Any]]:
     rounds = _select('tournament_rounds', {
         'select': '*', 'tournament_id': f'eq.{tournament_id}', 'order': 'round_number'})
     return next((r for r in rounds if r.get('challenge_id')), rounds[0] if rounds else None)
+
+
+def official_standings(tournament_id: str) -> List[Dict[str, Any]]:
+    """The site's own final ranking, best first: {name, rank, is_account}.
+
+    is_account marks the entry of the account this client signs in with.
+    """
+    rows = _select('tournament_players', {
+        'select': 'display_name,final_rank,user_id',
+        'tournament_id': f'eq.{tournament_id}',
+        'order': 'final_rank.asc.nullslast',
+    })
+    account = _session.get('user_id')  # set by the sign-in the read above needed
+    return [
+        {
+            'name': row.get('display_name'),
+            'rank': row.get('final_rank'),
+            'is_account': bool(account) and row.get('user_id') == account,
+        }
+        for row in rows
+    ]
 
 
 def pbn_filename(tournament: Dict[str, Any]) -> str:

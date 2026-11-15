@@ -220,12 +220,37 @@ def generate(request: GenerateRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+# The site's final ranking of a closed tournament does not change.
+_official_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def _official_standings(tournament_id: Optional[str]) -> List[Dict[str, Any]]:
+    """The site's ranking, best first; empty when the site cannot be read.
+
+    It only picks whose report opens first, so the entrants are still listed
+    without it.
+    """
+    if not tournament_id:
+        return []
+    rows = _official_cache.get(tournament_id)
+    if rows is None:
+        try:
+            rows = brill_client.official_standings(tournament_id)
+        except brill_client.BrillError:
+            return []
+        if rows:
+            _official_cache[tournament_id] = rows
+    return rows
+
+
 @app.get("/brill/entrants")
 def entrants(tournament: Optional[str] = Query(None)) -> dict:
-    """Entrants of one tournament with their standings, best first."""
+    """Entrants of one tournament with their standings, best first, and whose
+    report opens first: the signed-in account's entry if it played, else the winner."""
     frame, meta = _run(_tournament_frame, tournament)
     rows = _run(service.standings, frame)
-    return {"meta": meta, "entrants": rows, "count": len(rows)}
+    first = service.default_entrant(frame, _official_standings(meta.get("tournament_id")))
+    return {"meta": meta, "entrants": rows, "count": len(rows), **first}
 
 
 @app.get("/brill/boards")

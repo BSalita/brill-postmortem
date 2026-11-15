@@ -52,7 +52,7 @@ class FakeSupabase:
         self.sign_ins += 1
         if kwargs['json']['password'] != 'right':
             return _Response({'error_description': 'Invalid login credentials'}, 400)
-        return _Response({'access_token': f'token{self.sign_ins}', 'expires_in': 3600})
+        return _Response({'access_token': f'token{self.sign_ins}', 'expires_in': 3600, 'user': {'id': 'u-me'}})
 
     def get(self, url, params=None, headers=None, **kwargs):
         self.gets.append((url, dict(params or {}), dict(headers or {})))
@@ -68,6 +68,12 @@ class FakeSupabase:
             rows = [test_brill_pbn.CHALLENGE]
         elif table == 'challenge_board_results':
             rows = test_brill_pbn.sample_rows()
+        elif table == 'tournament_players':
+            rows = [
+                {'display_name': 'BEN', 'final_rank': 1, 'user_id': None},
+                {'display_name': 'Alice', 'final_rank': 2, 'user_id': 'u-me'},
+                {'display_name': 'Lia', 'final_rank': 3, 'user_id': 'u-other'},
+            ]
         else:
             rows = []
         offset, limit = int(params.get('offset', 0)), int(params.get('limit', 1000))
@@ -122,6 +128,16 @@ class ClientTests(unittest.TestCase):
         self.assertIn('[Date "2026.11.12"]', fetched['text'])
         result_reads = [p for u, p, _h in self.fake.gets if u.endswith('challenge_board_results')]
         self.assertEqual(result_reads[0]['challenge_id'], 'eq.c1')
+
+    def test_official_standings_mark_the_signed_in_account(self):
+        rows = brill_client.official_standings('t-closed')
+        self.assertEqual(rows, [
+            {'name': 'BEN', 'rank': 1, 'is_account': False},
+            {'name': 'Alice', 'rank': 2, 'is_account': True},
+            {'name': 'Lia', 'rank': 3, 'is_account': False},
+        ])
+        read = [p for u, p, _h in self.fake.gets if u.endswith('tournament_players')][0]
+        self.assertEqual(read['tournament_id'], 'eq.t-closed')
 
     def test_pagination_reads_every_row(self):
         with mock.patch.object(brill_client, '_PAGE_ROWS', 2):

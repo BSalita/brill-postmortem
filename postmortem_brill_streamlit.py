@@ -117,8 +117,9 @@ def _set_query_param(name: str, value: Any) -> None:
 def sync_url_params_from_state() -> None:
     """Write the currently selected sidebar options back to the URL query string."""
     _set_query_param('tournament', st.session_state.get(_TOURNAMENT_KEY))
-    entrant = st.session_state.get(_ENTRANT_KEY)
-    _set_query_param('entrant', None if entrant in (None, ALL_ENTRANTS) else entrant)
+    # 'All entrants' is written too: without ?entrant= a tournament opens on
+    # the signed-in account's entry or the winner.
+    _set_query_param('entrant', st.session_state.get(_ENTRANT_KEY))
     show_sql = st.session_state.get('show_sql_query')
     _set_query_param(
         'show_sql_query',
@@ -211,8 +212,8 @@ def tournament_label(tournament_id: str) -> str:
 
 
 def tournament_changed():
-    # A new tournament has a new field: back to the whole field.
-    st.session_state[_ENTRANT_KEY] = ALL_ENTRANTS
+    # A new tournament has a new field: change_game_state picks its default entrant.
+    st.session_state[_ENTRANT_KEY] = None
     change_game_state()
 
 
@@ -255,6 +256,10 @@ def change_game_state():
         st.session_state.game_description = meta.get('tournament_name') or tournament.get('name')
         st.session_state.tournament_date = (meta.get('starts_at') or '')[:10] or None
         st.session_state.game_url = meta.get('url') or f'{BRILL_SITE_URL}/#tournament?tournamentId={tournament_id}'
+        # Keep an entrant already chosen (?entrant=, or a reload of the same
+        # tournament); otherwise open on the default one.
+        if st.session_state.get(_ENTRANT_KEY) not in [ALL_ENTRANTS] + entrants_of(df):
+            st.session_state[_ENTRANT_KEY] = default_entrant(meta.get('key'), df)
         apply_entrant()
 
     return
@@ -267,6 +272,16 @@ def entrants_of(df: Optional[pl.DataFrame]) -> List[str]:
     return (
         df.select('Table', 'Entrant').unique().sort('Table', 'Entrant')['Entrant'].to_list()
     )
+
+
+def default_entrant(key: Optional[str], df: pl.DataFrame) -> str:
+    """The entrant a tournament opens on: the entry of the Brill account the API
+    signs in with if it played, else the winner. The whole field if neither is known."""
+    try:
+        name = brill_api.entrants(key).get('default_entrant')
+    except brill_api.BrillApiClientError:
+        name = None
+    return name if name in entrants_of(df) else ALL_ENTRANTS
 
 
 def apply_entrant(keep_hand_expectations: bool = False):
@@ -389,7 +404,7 @@ def create_sidebar():
             options=options,
             key=_ENTRANT_KEY,
             on_change=entrant_changed,
-            help='Whose boards the report is about. Every entrant sits South at their own table beside three Brill robots.',
+            help="Whose boards the report is about. A tournament opens on this site's own Brill account if it played, else on the winner. Every entrant sits South at their own table beside three Brill robots.",
         )
 
     if st.session_state.player_id is None:
@@ -534,7 +549,7 @@ def initialize_website_specific():
     streamlit_chat.message(
         "I'm optimized for large screen devices such as a notebook or monitor. Do not use a smartphone.", key='intro_message_2', logo=st.session_state.assistant_logo)
     streamlit_chat.message(
-        "I start with the latest closed tournament. Choose another tournament, or one entrant, in the left sidebar.", key='intro_message_3', logo=st.session_state.assistant_logo)
+        "I start with the latest closed tournament. Choose another tournament or entrant, or the whole field, in the left sidebar.", key='intro_message_3', logo=st.session_state.assistant_logo)
     streamlit_chat.message(
         "I'm just a Proof of Concept so don't double me.", key='intro_message_5', logo=st.session_state.assistant_logo)
     app_info()
