@@ -118,7 +118,7 @@ def sync_url_params_from_state() -> None:
     """Write the currently selected sidebar options back to the URL query string."""
     _set_query_param('tournament', st.session_state.get(_TOURNAMENT_KEY))
     # 'All entrants' is written too: without ?entrant= a tournament opens on
-    # the signed-in account's entry or the winner.
+    # the winner.
     _set_query_param('entrant', st.session_state.get(_ENTRANT_KEY))
     show_sql = st.session_state.get('show_sql_query')
     _set_query_param(
@@ -275,10 +275,9 @@ def entrants_of(df: Optional[pl.DataFrame]) -> List[str]:
 
 
 def default_entrant(key: Optional[str], df: pl.DataFrame) -> str:
-    """The entrant a tournament opens on: the entry of the Brill account the API
-    signs in with if it played, else the winner. The whole field if neither is known."""
+    """The entrant a tournament opens on: the winner. The whole field if unknown."""
     try:
-        name = brill_api.entrants(key).get('default_entrant')
+        name = brill_api.entrants(key).get('winner')
     except brill_api.BrillApiClientError:
         name = None
     return name if name in entrants_of(df) else ALL_ENTRANTS
@@ -404,7 +403,7 @@ def create_sidebar():
             options=options,
             key=_ENTRANT_KEY,
             on_change=entrant_changed,
-            help="Whose boards the report is about. A tournament opens on this site's own Brill account if it played, else on the winner. Every entrant sits South at their own table beside three Brill robots.",
+            help="Whose boards the report is about. A tournament opens on the winner. Every entrant sits South at their own table beside three Brill robots.",
         )
 
     if st.session_state.player_id is None:

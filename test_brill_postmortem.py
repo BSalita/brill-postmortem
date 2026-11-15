@@ -156,25 +156,14 @@ class EntrantViewTests(unittest.TestCase):
             [(r['rank'], r['entrant'], r['pct'], r['boards'], r['score']) for r in rows],
             [(1, 'BEN', 75.0, 2, 50), (2, 'Alice', 50.0, 2, -100), (3, 'Lia', 0.0, 1, 0)])
 
-    def test_default_entrant_is_the_account_if_it_played_else_the_winner(self):
-        official = [
-            {'name': 'Lia', 'rank': 1, 'is_account': False},
-            {'name': 'BEN', 'rank': 2, 'is_account': False},
-            {'name': 'Alice', 'rank': 3, 'is_account': True},
-        ]
-        self.assertEqual(service.default_entrant(self.df, official), {
-            'default_entrant': 'Alice', 'account_entrant': 'Alice', 'winner': 'Lia'})
-        for row in official:
-            row['is_account'] = False
-        self.assertEqual(service.default_entrant(self.df, official), {
-            'default_entrant': 'Lia', 'account_entrant': None, 'winner': 'Lia'})
+    def test_winner_is_the_sites_rank_one(self):
+        official = [{'name': 'Lia', 'rank': 1}, {'name': 'BEN', 'rank': 2}, {'name': 'Alice', 'rank': 3}]
+        self.assertEqual(service.winner(self.df, official), 'Lia')
 
-    def test_default_entrant_without_a_usable_site_ranking_is_the_best_percentage(self):
-        expected = {'default_entrant': 'BEN', 'account_entrant': None, 'winner': 'BEN'}
-        self.assertEqual(service.default_entrant(self.df, []), expected)
+    def test_winner_without_a_usable_site_ranking_is_the_best_percentage(self):
+        self.assertEqual(service.winner(self.df, []), 'BEN')
         # Names the site lists that are not at a table here are ignored.
-        strangers = [{'name': 'Zed', 'rank': 1, 'is_account': True}]
-        self.assertEqual(service.default_entrant(self.df, strangers), expected)
+        self.assertEqual(service.winner(self.df, [{'name': 'Zed', 'rank': 1}]), 'BEN')
 
     def test_personalize_for_an_entrant(self):
         df, who = service.personalize(self.df, 'ben')
@@ -275,20 +264,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual([e['entrant'] for e in body['entrants']], ['BEN', 'Alice', 'Lia'])
         self.assertEqual(self.generated, [])
 
-    def test_entrants_name_who_the_report_opens_on(self):
-        self.official = [
-            {'name': 'Lia', 'rank': 1, 'is_account': False},
-            {'name': 'Alice', 'rank': 2, 'is_account': True},
-        ]
-        body = self.server.entrants(tournament=None)
-        self.assertEqual(
-            (body['default_entrant'], body['account_entrant'], body['winner']), ('Alice', 'Alice', 'Lia'))
+    def test_entrants_name_the_winner(self):
+        self.official = [{'name': 'Lia', 'rank': 1}, {'name': 'Alice', 'rank': 2}]
+        self.assertEqual(self.server.entrants(tournament=None)['winner'], 'Lia')
 
-    def test_entrants_without_the_site_ranking_open_on_the_best_percentage(self):
+    def test_entrants_without_the_site_ranking_name_the_best_percentage(self):
         self.official = self.server.brill_client.BrillError('site down')
-        body = self.server.entrants(tournament=None)
-        self.assertEqual(
-            (body['default_entrant'], body['account_entrant'], body['winner']), ('BEN', None, 'BEN'))
+        self.assertEqual(self.server.entrants(tournament=None)['winner'], 'BEN')
 
     def test_boards_for_one_entrant(self):
         body = self._boards(entrant='alice', columns='Board,Entrant,Contract')

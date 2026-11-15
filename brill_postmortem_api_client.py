@@ -92,7 +92,7 @@ def generate(tournament_id: str, sd_samples: int = 10, force: bool = False) -> D
 
 
 def entrants(key: str) -> Dict[str, Any]:
-    """Standings of one tournament, plus default_entrant, account_entrant and winner."""
+    """Standings of one tournament, and its winner."""
     return _request("GET", "/brill/entrants", {"tournament": key}, timeout_s=60)
 
 

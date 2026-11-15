@@ -304,21 +304,19 @@ def standings(df: pl.DataFrame) -> List[Dict[str, Any]]:
     return table.rename({'Entrant': 'entrant', 'Table': 'table'}).to_dicts()
 
 
-def default_entrant(df: pl.DataFrame, official: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
-    """Whose report opens first: the signed-in account's entry if it played, else the winner.
+def winner(df: pl.DataFrame, official: List[Dict[str, Any]]) -> Optional[str]:
+    """The winning entrant, whose report opens first.
 
-    official is the site's ranking, best first: {name, rank, is_account}. The
-    winner is the site's rank 1; without a usable site ranking, the best
-    matchpoint percentage here.
+    official is the site's ranking, best first: {name, rank}. The winner is
+    the site's rank 1; without a usable site ranking, the best matchpoint
+    percentage here.
     """
     names = set(entrant_names(df))
-    listed = [row for row in official if row.get('name') in names]
-    account = next((row['name'] for row in listed if row.get('is_account')), None)
-    winner = next((row['name'] for row in listed if row.get('rank') == 1), None)
-    if winner is None:
-        table = standings(df)
-        winner = table[0]['entrant'] if table else None
-    return {'default_entrant': account or winner, 'account_entrant': account, 'winner': winner}
+    for row in official:
+        if row.get('rank') == 1 and row.get('name') in names:
+            return row['name']
+    table = standings(df)
+    return table[0]['entrant'] if table else None
 
 
 def personalize(df: pl.DataFrame, entrant: Optional[str]) -> Tuple[pl.DataFrame, Dict[str, Any]]:
