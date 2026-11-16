@@ -227,8 +227,7 @@ _official_cache: Dict[str, List[Dict[str, Any]]] = {}
 def _official_standings(tournament_id: Optional[str]) -> List[Dict[str, Any]]:
     """The site's ranking, best first; empty when the site cannot be read.
 
-    It only names the winner, whose report opens first, so the entrants are
-    still listed without it.
+    Without it the entrants are still listed, by matchpoint percentage.
     """
     if not tournament_id:
         return []
@@ -245,12 +244,18 @@ def _official_standings(tournament_id: Optional[str]) -> List[Dict[str, Any]]:
 
 @app.get("/brill/entrants")
 def entrants(tournament: Optional[str] = Query(None)) -> dict:
-    """Entrants of one tournament with their standings, best first, and the
-    winner, whose report opens first."""
+    """Entrants of one tournament with their standings, best first, their
+    names in finishing order (ranking), and the winner, who tops it."""
     frame, meta = _run(_tournament_frame, tournament)
     rows = _run(service.standings, frame)
-    winner = service.winner(frame, _official_standings(meta.get("tournament_id")))
-    return {"meta": meta, "entrants": rows, "count": len(rows), "winner": winner}
+    ranking = service.ranking(frame, _official_standings(meta.get("tournament_id")))
+    return {
+        "meta": meta,
+        "entrants": rows,
+        "count": len(rows),
+        "ranking": ranking,
+        "winner": ranking[0] if ranking else None,
+    }
 
 
 @app.get("/brill/boards")

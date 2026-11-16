@@ -73,6 +73,12 @@ TOURNAMENT_LIMIT = 10
 
 _TOURNAMENT_KEY = 'brill_tournament_select'
 _ENTRANT_KEY = 'brill_entrant_select'
+# First Entrant option: whoever tops the tournament's ranking.
+WINNER = 'Winner'
+# The Entrant option the user last picked themself (an entrant or the whole
+# field); None while they stay on Winner. It is selected again in every
+# tournament that has it.
+_FAVORITE_KEY = 'brill_favorite_entrant'
 
 
 def get_session_duckdb_connection():
@@ -117,9 +123,9 @@ def _set_query_param(name: str, value: Any) -> None:
 def sync_url_params_from_state() -> None:
     """Write the currently selected sidebar options back to the URL query string."""
     _set_query_param('tournament', st.session_state.get(_TOURNAMENT_KEY))
-    # 'All entrants' is written too: without ?entrant= a tournament opens on
-    # the winner.
-    _set_query_param('entrant', st.session_state.get(_ENTRANT_KEY))
+    # Winner is not written: without ?entrant= a tournament opens on the winner.
+    entrant = st.session_state.get(_ENTRANT_KEY)
+    _set_query_param('entrant', None if entrant == WINNER else entrant)
     show_sql = st.session_state.get('show_sql_query')
     _set_query_param(
         'show_sql_query',
@@ -212,8 +218,8 @@ def tournament_label(tournament_id: str) -> str:
 
 
 def tournament_changed():
-    # A new tournament has a new field: change_game_state picks its default entrant.
-    st.session_state[_ENTRANT_KEY] = None
+    # A new tournament has a new field: change_game_state selects the favorite
+    # entrant if they played in it, else the winner.
     change_game_state()
 
 
@@ -226,6 +232,7 @@ def change_game_state():
         reset_game_data() # wipe out all game state data
         st.session_state.button_title = 'Summarize' # a new game opens on the full postmortem
         st.session_state.brill_base_df = None
+        st.session_state.brill_ranking = None
 
         tournament_id = st.session_state.get(_TOURNAMENT_KEY)
         if not tournament_id:
@@ -244,6 +251,7 @@ def change_game_state():
             )
             df = brill_api.postmortem_dataframe(meta.get('key'))
             st.session_state.brill_pbn_text = brill_api.pbn_text(meta.get('key'))
+            ranking = brill_api.entrants(meta.get('key'))['ranking']
         except brill_api.BrillApiClientError as e:
             st.error(str(e))
             return
@@ -251,36 +259,43 @@ def change_game_state():
         assert df.select(pl.col(pl.Object)).is_empty(), f"Found Object columns: {[col for col, dtype in df.schema.items() if dtype == pl.Object]}"
         st.session_state.brill_meta = meta
         st.session_state.brill_base_df = df
+        st.session_state.brill_ranking = ranking
         st.session_state.session_id = tournament_id
         st.session_state.group_id = tournament_id
         st.session_state.game_description = meta.get('tournament_name') or tournament.get('name')
         st.session_state.tournament_date = (meta.get('starts_at') or '')[:10] or None
         st.session_state.game_url = meta.get('url') or f'{BRILL_SITE_URL}/#tournament?tournamentId={tournament_id}'
-        # Keep an entrant already chosen (?entrant=, or a reload of the same
-        # tournament); otherwise open on the default one.
-        if st.session_state.get(_ENTRANT_KEY) not in [ALL_ENTRANTS] + entrants_of(df):
-            st.session_state[_ENTRANT_KEY] = default_entrant(meta.get('key'), df)
+        # The favorite (a pick in the sidebar, or ?entrant=) if this tournament
+        # has it; otherwise the winner.
+        st.session_state[_ENTRANT_KEY] = opening_choice(
+            st.session_state.get(_FAVORITE_KEY), entrant_options())
         apply_entrant()
 
     return
 
 
-def entrants_of(df: Optional[pl.DataFrame]) -> List[str]:
-    """Entrant names in table order."""
-    if df is None or 'Entrant' not in df.columns:
-        return []
-    return (
-        df.select('Table', 'Entrant').unique().sort('Table', 'Entrant')['Entrant'].to_list()
-    )
+def entrant_options() -> List[str]:
+    """The Entrant choices: Winner, the entrants in finishing order, the whole field."""
+    ranking = st.session_state.get('brill_ranking') or []
+    return [WINNER] + ranking + [ALL_ENTRANTS] if ranking else []
 
 
-def default_entrant(key: Optional[str], df: pl.DataFrame) -> str:
-    """The entrant a tournament opens on: the winner. The whole field if unknown."""
-    try:
-        name = brill_api.entrants(key).get('winner')
-    except brill_api.BrillApiClientError:
-        name = None
-    return name if name in entrants_of(df) else ALL_ENTRANTS
+def opening_choice(favorite: Optional[str], options: List[str]) -> str:
+    """The Entrant choice a tournament opens on: the favorite if it is one of options, else Winner."""
+    return favorite if favorite in options else WINNER
+
+
+def favorite_after_pick(choice: Optional[str]) -> Optional[str]:
+    """The favorite once the user picks choice: picking Winner drops it."""
+    return None if choice == WINNER else choice
+
+
+def entrant_label(option: str) -> str:
+    """Winner names who it is; the other options show as they are."""
+    if option == WINNER:
+        ranking = st.session_state.get('brill_ranking') or []
+        return f'{WINNER} ({ranking[0]})' if ranking else WINNER
+    return option
 
 
 def apply_entrant(keep_hand_expectations: bool = False):
@@ -288,10 +303,11 @@ def apply_entrant(keep_hand_expectations: bool = False):
     df = st.session_state.get('brill_base_df')
     if df is None:
         return
-    entrant = st.session_state.get(_ENTRANT_KEY) or ALL_ENTRANTS
-    if entrant != ALL_ENTRANTS and entrant not in entrants_of(df):
-        entrant = ALL_ENTRANTS
-        st.session_state[_ENTRANT_KEY] = entrant
+    choice = st.session_state.get(_ENTRANT_KEY)
+    if choice not in entrant_options():
+        choice = WINNER
+        st.session_state[_ENTRANT_KEY] = choice
+    entrant = st.session_state.brill_ranking[0] if choice == WINNER else choice
 
     # The entrant always sits South; the pair under review is always NS.
     st.session_state.pair_direction = 'NS'
@@ -341,6 +357,7 @@ def register_session_df(df: pl.DataFrame, keep_hand_expectations: bool = False) 
 
 
 def entrant_changed():
+    st.session_state[_FAVORITE_KEY] = favorite_after_pick(st.session_state.get(_ENTRANT_KEY))
     st.session_state.sql_query_mode = False
     apply_entrant(keep_hand_expectations=True)
 
@@ -393,17 +410,17 @@ def create_sidebar():
         help=f'The latest {TOURNAMENT_LIMIT} closed tournaments at {BRILL_SITE_URL}, newest first.',
     )
 
-    entrants = entrants_of(st.session_state.get('brill_base_df'))
-    if entrants:
-        options = [ALL_ENTRANTS] + entrants
+    options = entrant_options()
+    if options:
         if st.session_state.get(_ENTRANT_KEY) not in options:
-            st.session_state[_ENTRANT_KEY] = ALL_ENTRANTS
+            st.session_state[_ENTRANT_KEY] = WINNER
         st.sidebar.selectbox(
             'Entrant',
             options=options,
+            format_func=entrant_label,
             key=_ENTRANT_KEY,
             on_change=entrant_changed,
-            help="Whose boards the report is about. A tournament opens on the winner. Every entrant sits South at their own table beside three Brill robots.",
+            help=f"Whose boards the report is about. Winner is the top-ranked entrant; the others follow in finishing order, then '{ALL_ENTRANTS}' for the whole field. An entrant you pick is kept when you change tournament, if they played in it; otherwise the winner is shown. Every entrant sits South at their own table beside three Brill robots.",
         )
 
     if st.session_state.player_id is None:
@@ -573,6 +590,8 @@ class PostmortemBrill(PostmortemBase):
             'brill_tournaments': None,
             'brill_tournaments_error': None,
             'brill_base_df': None,
+            'brill_ranking': None,
+            _FAVORITE_KEY: None,
             'brill_meta': None,
             'brill_pbn_text': None,
             'save_intermediate_files': False,
@@ -586,9 +605,10 @@ class PostmortemBrill(PostmortemBase):
 
         # URL params take precedence over defaults (after reset).
         apply_url_params_to_state()
+        # ?entrant= counts as the user's pick.
         url_entrant = st.session_state.pop('_url_entrant', None)
         if url_entrant:
-            st.session_state[_ENTRANT_KEY] = url_entrant
+            st.session_state[_FAVORITE_KEY] = favorite_after_pick(url_entrant)
         return
 
     def reset_game_data(self):
@@ -628,7 +648,6 @@ class PostmortemBrill(PostmortemBase):
             self.initialize_session_state()
             self.create_sidebar()
             if st.session_state.get(_TOURNAMENT_KEY):
-                # ?entrant= survives the load; a sidebar change resets it.
                 change_game_state()
                 # Rerun so create_ui writes the report instead of the intro.
                 if st.session_state.get('df') is not None:

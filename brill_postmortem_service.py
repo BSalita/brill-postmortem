@@ -304,19 +304,26 @@ def standings(df: pl.DataFrame) -> List[Dict[str, Any]]:
     return table.rename({'Entrant': 'entrant', 'Table': 'table'}).to_dicts()
 
 
-def winner(df: pl.DataFrame, official: List[Dict[str, Any]]) -> Optional[str]:
-    """The winning entrant, whose report opens first.
+def ranking(df: pl.DataFrame, official: List[Dict[str, Any]]) -> List[str]:
+    """Entrant names in finishing order, the winner first.
 
-    official is the site's ranking, best first: {name, rank}. The winner is
-    the site's rank 1; without a usable site ranking, the best matchpoint
-    percentage here.
+    official is the site's ranking: {name, rank}. Entrants the site ranks come
+    first, in the site's order; the others follow by matchpoint percentage
+    here, which also settles a rank the site gives to several entrants.
     """
-    names = set(entrant_names(df))
+    names = [row['entrant'] for row in standings(df)]
+    site_rank: Dict[str, int] = {}
     for row in official:
-        if row.get('rank') == 1 and row.get('name') in names:
-            return row['name']
-    table = standings(df)
-    return table[0]['entrant'] if table else None
+        if row.get('rank') is not None and row.get('name') in names:
+            site_rank.setdefault(row['name'], row['rank'])
+    # sorted is stable: equal keys keep the percentage order of names.
+    return sorted(names, key=lambda name: (name not in site_rank, site_rank.get(name, 0)))
+
+
+def winner(df: pl.DataFrame, official: List[Dict[str, Any]]) -> Optional[str]:
+    """The winning entrant, whose report opens first: the top of ranking()."""
+    names = ranking(df, official)
+    return names[0] if names else None
 
 
 def personalize(df: pl.DataFrame, entrant: Optional[str]) -> Tuple[pl.DataFrame, Dict[str, Any]]:

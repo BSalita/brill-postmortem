@@ -165,6 +165,21 @@ class EntrantViewTests(unittest.TestCase):
         # Names the site lists that are not at a table here are ignored.
         self.assertEqual(service.winner(self.df, [{'name': 'Zed', 'rank': 1}]), 'BEN')
 
+    def test_ranking_follows_the_site(self):
+        official = [{'name': 'Lia', 'rank': 1}, {'name': 'Alice', 'rank': 2}, {'name': 'BEN', 'rank': 3}]
+        self.assertEqual(service.ranking(self.df, official), ['Lia', 'Alice', 'BEN'])
+
+    def test_ranking_puts_entrants_the_site_does_not_rank_last_by_percentage(self):
+        # By percentage: BEN, Alice, Lia.
+        self.assertEqual(service.ranking(self.df, []), ['BEN', 'Alice', 'Lia'])
+        official = [{'name': 'Zed', 'rank': 1}, {'name': 'Lia', 'rank': 2}, {'name': 'BEN', 'rank': None}]
+        self.assertEqual(service.ranking(self.df, official), ['Lia', 'BEN', 'Alice'])
+        self.assertEqual(service.winner(self.df, official), 'Lia')
+
+    def test_ranking_settles_a_shared_site_rank_by_percentage(self):
+        official = [{'name': 'Lia', 'rank': 1}, {'name': 'Alice', 'rank': 1}, {'name': 'BEN', 'rank': 3}]
+        self.assertEqual(service.ranking(self.df, official), ['Alice', 'Lia', 'BEN'])
+
     def test_personalize_for_an_entrant(self):
         df, who = service.personalize(self.df, 'ben')
         self.assertEqual(who, {
@@ -266,11 +281,15 @@ class ApiTests(unittest.TestCase):
 
     def test_entrants_name_the_winner(self):
         self.official = [{'name': 'Lia', 'rank': 1}, {'name': 'Alice', 'rank': 2}]
-        self.assertEqual(self.server.entrants(tournament=None)['winner'], 'Lia')
+        body = self.server.entrants(tournament=None)
+        self.assertEqual(body['winner'], 'Lia')
+        self.assertEqual(body['ranking'], ['Lia', 'Alice', 'BEN'])
 
     def test_entrants_without_the_site_ranking_name_the_best_percentage(self):
         self.official = self.server.brill_client.BrillError('site down')
-        self.assertEqual(self.server.entrants(tournament=None)['winner'], 'BEN')
+        body = self.server.entrants(tournament=None)
+        self.assertEqual(body['winner'], 'BEN')
+        self.assertEqual(body['ranking'], ['BEN', 'Alice', 'Lia'])
 
     def test_boards_for_one_entrant(self):
         body = self._boards(entrant='alice', columns='Board,Entrant,Contract')

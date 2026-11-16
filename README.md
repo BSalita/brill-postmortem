@@ -4,7 +4,7 @@ GitHub: https://github.com/BSalita/brill-postmortem
 
 Postmortem of the robot competitions at [Brill Bridge Challenge](https://brill.aalborgdata.dk). Every day four eight-board events are played by humans and robots. Each entrant sits South at their own table beside three Brill robots, and everyone plays the same boards.
 
-The app builds the same field PBN the site's download button gives (one record per table per board, e.g. `daily-imp-2026-11-12.pbn`) and runs it through the mlBridge augmentation used by postmortem-pbn. The sidebar offers the latest 10 closed tournaments and, within one, a single entrant or the whole field. A tournament opens on the winner (the site's final rank 1).
+The app builds the same field PBN the site's download button gives (one record per table per board, e.g. `daily-imp-2026-11-12.pbn`) and runs it through the mlBridge augmentation used by postmortem-pbn. The sidebar offers the latest 10 closed tournaments and, within one, a single entrant or the whole field. The Entrant list starts with Winner (the site's final rank 1), then the entrants in finishing order, then the whole field. A tournament opens on the winner. An entrant picked from the list is a favorite: every tournament chosen afterwards opens on them if they played in it, otherwise on the winner. Picking Winner drops the favorite.
 
 ## Architecture
 
@@ -46,7 +46,7 @@ streamlit run postmortem_brill_streamlit.py --server.port 8530
 
 API health: `http://127.0.0.1:8531/health` (`service`: `postmortem-brill-api`, `credentials_configured`).
 
-URL parameters: `?tournament=<id>&entrant=<name>&show_sql_query=1&sd_samples=10`. `entrant=All entrants` is the whole field; without `entrant` the winner is used.
+URL parameters: `?tournament=<id>&entrant=<name>&show_sql_query=1&sd_samples=10`. `entrant=All entrants` is the whole field; without `entrant` the winner is used. An `entrant` in the URL counts as a pick from the list.
 
 ## API
 
@@ -57,7 +57,7 @@ URL parameters: `?tournament=<id>&entrant=<name>&show_sql_query=1&sd_samples=10`
 | POST | `/brill/generate` | Fetch one tournament (`tournament_id`), augment, cache |
 | GET | `/brill/games` | Cached tournaments, newest first |
 | GET | `/brill/dataset-info` | Cache directory and keys |
-| GET | `/brill/entrants` | Entrants and standings of one tournament (`tournament`), and its `winner` |
+| GET | `/brill/entrants` | Entrants and standings of one tournament (`tournament`), their names in finishing order (`ranking`), and its `winner` |
 | GET | `/brill/boards` | Per-table, per-board rows (`tournament`, `entrant`, `only_my_boards`, `columns`, `limit`) |
 | POST | `/brill/sql` | DuckDB SQL against table `self` (`tournament`, `entrant`) |
 | GET | `/brill/schema` | Column names and dtypes (`tournament`, `pattern`) |
