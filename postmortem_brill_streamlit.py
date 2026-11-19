@@ -59,6 +59,7 @@ import streamlitlib
 from mlBridge.mlBridgePostmortemLib import (
     HAND_EXPECTATIONS_TABLE,
     PostmortemBase,
+    sidebar_ai_auctions_link,
     sidebar_report_buttons,
     when_connection_free,
 )
@@ -447,6 +448,7 @@ def create_sidebar():
 
     if st.session_state.get('df') is not None and st.session_state.get('favorites'):
         sidebar_report_buttons(get_session_duckdb_connection(), REPORT_BUTTONS)
+        sidebar_ai_auctions_link('brill')
 
     # Other Morty websites
     st.sidebar.markdown("---")
